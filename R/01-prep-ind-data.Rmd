@@ -1,0 +1,389 @@
+---
+title: "Trachoma endgame serology: prepare individual-level dataset"
+author: "Christine Tedijanto christine.tedijanto@ucsf.edu"
+date: "Last updated: 03/01/22"
+output:
+    html_document:
+      code_folding: hide
+      toc: true
+      toc_float: true
+      toc_collapsed: true
+      toc_depth: 3
+number_sections: false
+---
+
+**Objective:** Clean data and create individual-level dataset for analysis.
+
+```{r setup, message = FALSE}
+library(here)
+source(here("R/0-config.R"))
+
+# save combined dataframe? (TRUE = save)
+save_df <- TRUE
+
+## Proctor studies -----
+# WUHA
+wuha_df <- read_csv(here(untouched_data_path, "wuha/20210923_wuha_ind_all.csv"))
+
+# TAITU
+taitu_df <- read_csv(here(untouched_data_path, "taitu/taitudata_christine.csv"))
+
+# MORDOR
+mordor_df <- read_rds(here(untouched_data_path, "mordor/R01-mordor-sero.rds"))
+
+# PRET Niger
+pret_df <- read_csv(here(untouched_data_path, "pret/Dry spot_PRET7 Niger Study Results-updated(9-15-2014).csv"))
+
+## publicly available -----
+# Kongwa (Odonkor 2021)
+# downloaded from https://journals.plos.org/plosntds/article?id=10.1371/journal.pntd.0009343 supplement on 08/30/2021
+kongwa_2018_df <- readxl::read_xlsx(here(untouched_data_path, "kongwa-2018/PLoSNTD_Odonkor_2021_Kongwa.xlsx"))
+
+# Malawi (Burr 2019)
+# downloaded from https://journals.plos.org/plosntds/article?id=10.1371/journal.pntd.0007749 supplement on 01/28/2022
+malawi_df <- read_csv(here(untouched_data_path, "malawi/pntd.0007749.s001.csv"))
+
+## other datasets -----
+# Carter Center (Nash 2020)
+cc_df <- read_csv(here(untouched_data_path, "carter-center/West Amhara serology data for SCR.TCC 2020.csv"))
+
+# Kongwa (Wilson 2019)
+kongwa_df <- read_rds(here(untouched_data_path, "kongwa/R01-kongwa-sero.rds"))
+kongwa_pcr_df <- readxl::read_xlsx(here(untouched_data_path, "kongwa/Gates T1B 2012 Demographics and DBS and PCR.xlsx"), sheet = "PCR") # individual-level PCR for baseline
+kongwa_pcr_clu1 <- readxl::read_xlsx(here(untouched_data_path, "kongwa/Copy of Baseline_2 year data with balozi.xlsx"), sheet = "Baseline") # cluster-level PCR at baseline
+kongwa_pcr_clu2 <- readxl::read_xlsx(here(untouched_data_path, "kongwa/Copy of Baseline_2 year data with balozi.xlsx"), sheet = "2 year") # cluster-level PCR at year 2
+kongwa_pcr_key <- read_rds(here(untouched_data_path, "kongwa/kongwa-mba-kids.rds")) %>% # link pcr ID to public ID
+  mutate(id = row_number()) # to link to R01 dataset (see R01-trachoma-sero-kongwa.Rmd)
+```
+
+## Data cleaning
+
+### WUHA
+
+```{r wuha}
+wuha_clean <- wuha_df %>% 
+  filter(random_sample == 1, # include only children randomly sampled in study design
+         age_group != "10+y",
+         !(age_group == "6-9y" & survey %in% c(12,24)), # serology not collected for random sample at survey 12 and 24
+         !(age_years>5 & survey %in% c(12,24)), # age years variable may not match with age_group variable in some cases (removes 94/7287, 1.3% rows)
+         age_years <= 9, age_years > 0) %>%
+  mutate(source = "WUHA",
+         location_name = "Wag Hemra, Ethiopia (WUHA)",
+         # based on ROC cutoff from reference samples
+         # see Migchelsen et al. PLOS NTD 2017. https://doi.org/10.1371/journal.pntd.0005230
+         pgp3_cutoff = 1113,
+         ct694_cutoff = 337,
+         # check years with Jeremy
+         # based on Aragie et al. in Lancet Glob Health, study was from Nov 2015-Mar 2019 including census which occurred ~1 month before data collection
+         year = case_when(survey == 0 ~ 2016,
+                          survey == 12 ~ 2017,
+                          survey == 24 ~ 2018,
+                          survey == 36 ~ 2019),
+         mda = case_when(survey == 0 ~ 1, TRUE ~ 0)) %>% 
+  dplyr::select(source, location_name,
+                cluster_id, household_id, individual_id,
+                survey, year,
+                age_months, age_years,
+                pcr = pcr_individual, tf, ti,
+                pgp3_cont = Pgp3, pgp3_cutoff, pgp3_bin = Pgp3_pos, 
+                ct694_cont = Ct694, ct694_cutoff, ct694_bin = Ct694_pos,
+                mda)
+
+print(paste(nrow(wuha_clean), "rows in cleaned WUHA data")) #6687
+```
+
+### TAITU
+
+```{r taitu}
+taitu_clean <- taitu_df %>%
+  filter(age.cc >= 12) %>% #remove children under age 1
+  mutate(source = "TAITU",
+         location_name = "Wag Hemra, Ethiopia (TAITU)",
+         # based on ROC cutoff from reference samples
+         # see Migchelsen et al. PLOS NTD 2017. https://doi.org/10.1371/journal.pntd.0005230
+         pgp3_cutoff = 1113, 
+         ct694_cutoff = 337,
+         age_years = floor(age.cc / 12),
+         year = 2018) %>% 
+  # calculated binary for consistency w other studies
+  # matches with "pos" variables in original TAITU dataset
+  mutate(pgp3_bin = as.numeric(Pgp3>pgp3_cutoff),
+         ct694_bin = as.numeric(Ct694>ct694_cutoff)) %>% 
+  mutate(mda = case_when(
+    studyarm %in% c("Targeted", "MDA") ~ 1,
+    studyarm == "Delayed" ~ 0)) %>%
+  mutate(pcr = case_when(
+    pcr_ind == "Positive" ~ 1,
+    pcr_ind == "Negative" ~ 0,
+    pcr_ind == "Equivocal" ~ 0.5)) %>%
+  # based on email communication with Jeremy - can assume all NA for clinical signs are 0
+  mutate(tf = case_when(
+    TF == "Yes" ~ 1,
+    TRUE ~ 0)) %>% 
+  mutate(ti = case_when(
+    TI == "Yes" ~ 1,
+    TRUE ~ 0)) %>% 
+  dplyr::select(source, location_name,
+                cluster_id = gwu, individual_id = masterperson,
+                survey = phase, year,
+                age_months = age.cc, age_years,
+                pcr, tf, ti,
+                pgp3_cont = Pgp3, pgp3_cutoff, pgp3_bin,
+                ct694_cont = Ct694, ct694_cutoff, ct694_bin,
+                mda)
+
+print(paste(nrow(taitu_clean), "rows in cleaned TAITU data (month 24 only)")) #1487
+```
+
+### MORDOR
+
+```{r mordor}
+mordor_clean <- mordor_df %>% 
+  filter(agem >= 12) %>% # remove children under 1 year old
+  mutate(source = "MORDOR",
+         temp_year = substr(testdate,1,4),
+         age_years = floor(agem / 12),
+         location_name = "Dosso, Niger") %>%
+  # first 2 observations occurred 6 months apart
+  mutate(year = case_when(
+    phase == 0 ~ paste0("Spring ", temp_year),
+    phase == 6 ~ paste0("Fall ", temp_year),
+    TRUE ~ temp_year)) %>% 
+  dplyr::select(source, location_name,
+                cluster_id = clusterid, individual_id = childid,
+                survey = phase, year,
+                age_months = agem, age_years,
+                antigen, cont = mfi, cutoff = serocut) %>%
+  # data comes with one row per antigen, pivot wider to match other datasets
+  pivot_wider(names_from = antigen,
+              values_from = c(cont, cutoff),
+              names_glue = "{antigen}_{.value}") %>% 
+  mutate(pgp3_bin = as.numeric(pgp3_cont > pgp3_cutoff),
+         ct694_bin = as.numeric(ct694_cont > ct694_cutoff),
+         mda = NA) # mda administered for mortality every 6 months only to children 1-59 months
+
+print(paste(nrow(mordor_clean), "rows in cleaned MORDOR data")) #4830
+```
+
+### PRET Niger
+
+```{r pret}
+pret_clean <- pret_df %>%
+  filter(age > 0, age <= 5) %>% # one individual marked as age 6 removed
+  dplyr::select(cluster_id = Code,
+                individual_id = "Proctor ID",
+                survey = VISIT,
+                age_years = age,
+                pgp3_cont = "pgp3 (22814) (49)",
+                ct694_cont = "CT694 (712014) (46)") %>% 
+  mutate(source = "PRET",
+         year = 2013,
+         # cutoffs based on ROC analysis
+         # see Kim et al. PLOS NTD 2019
+         pgp3_cutoff = 1083,
+         ct694_cutoff = 496,
+         location_name = "Matameye, Niger") %>% 
+  mutate(pgp3_bin = as.numeric(pgp3_cont > pgp3_cutoff),
+         ct694_bin = as.numeric(ct694_cont > ct694_cutoff)) %>% 
+  mutate(individual_id = as.character(individual_id),
+         mda = 1) # all clusters with serology received mda, either annual (6mo+) or biannual (<=12y)
+
+print(paste(nrow(pret_clean), "rows in cleaned PRET data (serology at last time point only)")) #1010
+```
+
+### Kongwa (Odonkor 2021)
+
+```{r kongwa_2018}
+kongwa_2018_clean <- kongwa_2018_df %>% 
+  mutate(source = "Kongwa (new)",
+         location_name = "Kongwa, Tanzania",
+         # cutoff based on ROC analysis using J-index
+         # see Odonkor et al. PLOS NTD 2021
+         pgp3_cutoff = 1771,
+         year = 2018, 
+         mda = 0) %>% # study was designed as survey 2 years post-MDA
+  rename(tf_photo_right = "Photo Grade for TF, Right Eye (1=TF, 0=no TF)",
+         tf_photo_left = "Photo Grade for TF, Left Eye (1=TF, 0=no TF)",
+         tf_field_right = "Field Grade for TF, Right Eye (1=TF, 0=no TF)",
+         tf_field_left = "Field Grade for TF, Left Eye (1=TF, 0=no TF)") %>% 
+  # use field grades because many photo are NA
+  # for field, one right and one left are marked with 9 -- assume this means missing and replace with 0
+  mutate_at(vars(starts_with("tf_field")), ~ifelse(.==9, 0, .)) %>% # some values were >1, replace with 0
+  rowwise() %>% 
+  mutate(tf = as.numeric(max(tf_field_right, tf_field_left))) %>% 
+  ungroup() %>% 
+  dplyr::select(source, location_name,
+                cluster_id = "Village ID",
+                individual_id = "Participant ID",
+                year, age_years = Age,
+                pcr = "CT Infection (1=positive, 0=negative)",
+                tf,
+                pgp3_cont = "Mean fluorescence minus background (MFI-BG)",
+                pgp3_cutoff,
+                pgp3_bin = "pgp3 Seropositivity (1=yes, 0=no)",
+                mda)
+
+print(paste(nrow(kongwa_2018_clean), "rows in cleaned new Kongwa data")) #2401
+```
+
+### Malawi
+
+```{r malawi}
+malawi_clean <- malawi_df %>% 
+  filter(EXAMINED==1, # yes with consent (see data dictionary, also in paper supplement)
+         AGE<=9, AGE>=1) %>% 
+  mutate(source = "Malawi", 
+         year = 2014,
+         district_name = case_when(District_binary == 0 ~ "Mchinji", District_binary == 1 ~ "Chikwawa"),
+         mda = 1, # paper says that MDA was administered yearly from 2011-2013
+         pcr = case_when(CT_PCR == 0 ~ 0, CT_PCR == 1 ~ 1), # 3 = invalid, 4 = missing
+         tf_left = case_when(LEFT_EYE_TF == 0 ~ 0, LEFT_EYE_TF == 1 ~ 1), # 2 = not able to grade (only 1-2 of these)
+         tf_right = case_when(RIGHT_EYE_TF == 0 ~ 0, RIGHT_EYE_TF == 1 ~ 1), # 2 = not able to grade (only 1-2 of these)
+         ti_left = case_when(LEFT_EYE_TI == 0 ~ 0, LEFT_EYE_TI == 1 ~ 1), # 2 = not able to grade (only 1-2 of these)
+         ti_right = case_when(RIGHT_EYE_TI == 0 ~ 0, RIGHT_EYE_TI == 1 ~ 1), # 2 = not able to grade (only 1-2 of these)
+         cluster_id = as.character(CLUSTER)) %>% 
+  rowwise() %>% 
+  mutate(tf = max(tf_left, tf_right, na.rm = TRUE),
+         ti = max(ti_left, ti_right, na.rm = TRUE),
+         location_name = paste0(district_name, ", Malawi")) %>%
+  ungroup() %>% 
+  dplyr::select(source, location_name,
+                cluster_id,
+                household_id = INSTANCE_ID_HOUSE,
+                individual_id = INSTANCE_ID_RES,
+                year, age_years = AGE,
+                pcr, tf, ti,
+                pgp3_bin = ELISA_binary,
+                pgp3_elisa = ELISA_A450, # elisa absorbance value
+                mda)
+
+print(paste(nrow(malawi_clean), "rows in cleaned Malawi data")) #6076
+```
+
+### Carter Center
+
+```{r cc}
+cc_clean <- cc_df %>% 
+  mutate(source = "CarterCenter",
+         year = 2017,
+         cluster_id = as.factor(cluster),
+         household_id = as.factor(hh_id),
+         individual_id = as.factor(dbs_sample_id),
+         location_name = paste0(district, ", Ethiopia"),
+         # based on ROC analysis
+         # see Nash et al. AJTMH 2020 (pg 3)
+         pgp3_cutoff = 1558, 
+         ct694_cutoff = 164) %>%
+  mutate(mda = case_when(
+    district == "Alefa" ~ 0, # had not received MDA for 2.5 years
+    district %in% c("Andabet", "Dera", "Woreta town") ~ 1)) %>% # received MDA ~8 months prior
+  dplyr::select(source, location_name,
+                cluster_id, household_id, individual_id,
+                year, age_years = age,
+                pgp3_cont = pgp3_value, pgp3_cutoff, pgp3_bin = pgp3_binary, 
+                ct694_cont = ct694_value, ct694_cutoff, ct694_bin = ct694_binary,
+                mda)
+
+print(paste(nrow(cc_clean), "rows in cleaned Carter Center data")) #2195
+```
+
+### Kongwa (Wilson 2019)
+
+```{r kongwa}
+## prepare pcr and TI data -----
+kongwa_pcr_clean <- kongwa_pcr_df %>% 
+  mutate(pcr = case_when(
+    PCR_RESULT == "negative" ~ 0,
+    PCR_RESULT == "positive" ~ 1)) %>% 
+  dplyr::select(PATIENT_ID, pcr) %>% 
+  mutate(svy = 1)
+
+kongwa_addl <- kongwa_pcr_key %>% 
+  left_join(kongwa_pcr_clean,
+            by = c("seroid" = "PATIENT_ID", "svy")) %>% #seroid is internal ID, should be 902 rows with PCR
+  mutate(tir = case_when(
+    ti_r %in% c("1", "2", "Present", "Present (1 or 2)") ~ 1,
+    ti_r %in% c("", "0", "0.5", "Absent", "Absent (0 or 0.5)", "NULL") ~ 0)) %>%
+  mutate(til = case_when(
+    ti_l %in% c("1", "2", "Present", "Present (1 or 2)") ~ 1,
+    ti_l %in% c("", "0", "0.5", "Absent", "Absent (0 or 0.5)", "NULL") ~ 0)) %>% 
+  mutate(ti = case_when(
+    tir == 1 | til == 1 ~ 1,
+    tir == 0 | til == 0 ~ 0)) %>% # let ti be NA if both values were missing
+  dplyr::select(survey = svy, year, village_id = vilid,
+                cluster_id = clusterid, household_id = hhid,
+                mda = aztr, individual_id = id,
+                ti, pcr) # also add ti
+
+## clean and merge datasets -----
+kongwa_clean <- kongwa_df %>%
+  mutate(source = "Kongwa",
+         cutoff = 10^roccut,
+         cluster_id = clusterid,
+         individual_id = id) %>% # note that this is a row ID, NOT a person ID
+  mutate_at(vars(cluster_id, individual_id), as.character) %>% 
+  dplyr::select(source, cluster_id,
+                individual_id, survey = svy, year,
+                age_years = age, 
+                tf = tf, antigen,
+                cont = mfi, # note that values in this dataset that were <= 0 were changed to 1
+                cutoff) %>%
+  # currently each antigen is its own row; pivot to make them columns
+  pivot_wider(names_from = antigen,
+              values_from = c(cont, cutoff),
+              names_glue = "{antigen}_{.value}") %>% 
+  mutate(pgp3_bin = as.numeric(pgp3_cont > pgp3_cutoff),
+         ct694_bin = as.numeric(ct694_cont > ct694_cutoff),
+         location_name = "Kongwa, Tanzania") %>% 
+  left_join(kongwa_addl %>% mutate_at(vars(cluster_id, individual_id), as.character),
+            by = c("survey", "year",
+                   "cluster_id", "individual_id")) %>% 
+  mutate_at(vars(tf,ti), as.numeric)
+
+print(paste(nrow(kongwa_clean), "rows in cleaned Kongwa data")) #4989
+```
+
+## Combine and save data
+
+```{r save}
+## combine datasets
+ind_df <- lapply(list(wuha_clean, taitu_clean, mordor_clean, pret_clean,
+                      malawi_clean, kongwa_2018_clean,
+                      cc_clean, kongwa_clean),
+                 function(x) x %>% mutate_at(vars(year), as.character)) %>% 
+  bind_rows() %>%
+  # additional columns for all datasets
+  mutate(location_year_name = paste(location_name, year)) %>% 
+  mutate(location_year_name_clu = paste0(location_year_name, "_", cluster_id)) %>%
+  # take log10 of continuous pgp3 measurement; if mfi-bg <= 0, set nonneg to 1 and log10 to 0
+  mutate(sero_bin = pgp3_bin * ct694_bin) %>% # require both pgp3 and ct694 for sero pos
+  mutate(pgp3_nonneg = ifelse(pgp3_cont<=0, 1, pgp3_cont)) %>% 
+  mutate(pgp3_log10 = log10(pgp3_nonneg)) %>% 
+  mutate(ct694_nonneg = ifelse(ct694_cont<=0, 1, ct694_cont)) %>% 
+  mutate(ct694_log10 = log10(ct694_nonneg)) %>% 
+  # reorder rows
+  dplyr::select(source, village_id, cluster_id, household_id, individual_id,
+                survey, year,
+                location_name, location_year_name, location_year_name_clu,
+                mda, age_months, age_years,
+                pcr, tf, ti,
+                pgp3_cont, pgp3_nonneg, pgp3_log10, pgp3_cutoff, pgp3_bin, pgp3_elisa,
+                ct694_cont, ct694_nonneg, ct694_log10, ct694_cutoff, ct694_bin,
+                sero_bin) %>% 
+  # reorder lyn
+  mutate(location_year_name = factor(location_year_name, levels = location_year_name_order))
+
+print(paste0("Individual dataset has ", nrow(ind_df), " rows"))
+head(ind_df)
+
+## save
+if(save_df){
+  saveRDS(ind_df, file = here(temp_data_path, "ind_df.rds"))
+}
+```
+
+## To resolve:
+
+* Individual PCR results are not available for many 6-9 year olds in the first round of WUHA (published results based on pooled MLE). PCR results for 2016 will be skewed towards results for 0-5 year olds. 
+* For TAITU, count all NA for TF/TI as 0? Changes TF from 66% overall to 54% and TI from 38% to 17%
+* Add tests for comparing seroprevalence between arms for applicable studies
